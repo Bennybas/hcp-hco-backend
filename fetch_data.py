@@ -31,18 +31,18 @@ def fetch_data():
     """
     Fetch Data from AWS Athena based on hcp_name
     """
-    hcp_name = request.args.get('hcp_name')  # Get hcp_name from query params
+    hcp_name = request.args.get('hcp_name')  
     
     query = f"""
     SELECT DISTINCT hcp_id, zolg_prescriber, patient_id, drug_name, hcp_name, 
            hco_mdm, hco_mdm_name, hco_mdm_tier, hcp_segment, ref_npi, 
-           hcp_state, hco_state 
+           hcp_state, hco_state ,ref_hco_npi_mdm
     FROM "product_landing"."zolg_master"
     WHERE hcp_name = '{hcp_name}'
     """ if hcp_name else """
     SELECT DISTINCT hcp_id, zolg_prescriber, patient_id, drug_name, hcp_name, 
            hco_mdm, hco_mdm_name, hco_mdm_tier, hcp_segment, ref_npi, 
-           hcp_state, hco_state 
+           hcp_state, hco_state ,ref_hco_npi_mdm
     FROM "product_landing"."zolg_master"
     """
     
@@ -161,6 +161,89 @@ def fetch_hcplandscape_insights():
     """
     df = get_athena_data(query)
     return jsonify(df.to_dict(orient='records'))
+
+
+@app.route('/hcp-360', methods=['GET'])
+def fetch_hcp_360():
+    """
+    Fetch HCP 360 Data from AWS Athena based on hcp_name or ref_npi
+    """
+    hcp_name = request.args.get('hcp_name')
+    ref_npi = request.args.get('ref_npi')
+
+    query = """
+    SELECT DISTINCT hcp_id, zolg_prescriber, zolgensma_iv_target, kol, patient_id, 
+                    drug_name, age_group, final_spec, hcp_segment, hcp_name, 
+                    hco_mdm_name,
+                    COALESCE(
+                        CONCAT(
+                            COALESCE(hco_addr_line_1, ''), ', ',
+                            COALESCE(hco_city, ''), ', ',
+                            COALESCE(hco_state, ''), ', ',
+                            COALESCE(hco_postal_cd_prim, '')
+                        ), ''
+                    )  AS address, 
+                    ref_npi, ref_name, congress_contributions, publications, clinical_trials
+    FROM "product_landing"."zolg_master_v2"
+    WHERE 1=1
+    """
+
+    # Add filtering conditions dynamically
+    filters = []
+    if hcp_name:
+        filters.append(f"hcp_name = '{hcp_name}'")
+    if ref_npi:
+        filters.append(f"ref_npi = '{ref_npi}'")
+
+    if filters:
+        query += " AND " + " AND ".join(filters)
+
+    df = get_athena_data(query)
+    return jsonify(df.to_dict(orient='records'))
+
+
+
+@app.route('/hco-360', methods=['GET'])
+def fetch_hco_360():
+    """
+    Fetch HCP 360 Data from AWS Athena based on hcp_name, ref_npi, or hco_mdm_name
+    """
+    hcp_name = request.args.get('hcp_name')
+    ref_npi = request.args.get('ref_npi')
+    hco_mdm = request.args.get('hco_mdm')
+
+    query = """
+    SELECT DISTINCT hcp_id, zolg_prescriber, zolgensma_iv_target, kol, patient_id, 
+                    drug_name, age_group, final_spec, hcp_segment, hcp_name, hco_mdm,
+                    hco_mdm_name,
+                    COALESCE(
+                        CONCAT(
+                            COALESCE(hco_addr_line_1, ''), ', ',
+                            COALESCE(hco_city, ''), ', ',
+                            COALESCE(hco_state, ''), ', ',
+                            COALESCE(hco_postal_cd_prim, '')
+                        ), ''
+                    ) AS address, 
+                    ref_npi, ref_name, congress_contributions, publications, clinical_trials, hco_grouping,hco_mdm_tier,account_setting_type
+    FROM "product_landing"."zolg_master_v2"
+    WHERE 1=1
+    """
+
+    # Dynamically add filters
+    filters = []
+    if hcp_name:
+        filters.append(f"hcp_name = '{hcp_name}'")
+    if ref_npi:
+        filters.append(f"ref_npi = '{ref_npi}'")
+    if hco_mdm:
+        filters.append(f"hco_mdm = '{hco_mdm}'")
+
+    if filters:
+        query += " AND " + " AND ".join(filters)
+
+    df = get_athena_data(query)  
+    return jsonify(df.to_dict(orient='records'))
+
 
 if __name__ == '__main__':
     app.run(debug=True)

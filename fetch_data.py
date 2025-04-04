@@ -142,9 +142,6 @@ WHERE
     (select count(DISTINCT ref_npi) from "product_landing"."zolg_master" where ref_npi !='-') as ref_npi
     
     from  "product_landing"."zolg_master"
-    
-    
-    
     """
     df = get_athena_data(query)
     return jsonify(df.to_dict(orient='records'))
@@ -224,7 +221,8 @@ def fetch_hco_360():
                             COALESCE(hco_postal_cd_prim, '')
                         ), ''
                     ) AS address, 
-                    ref_npi, ref_name, congress_contributions, publications, clinical_trials, hco_grouping,hco_mdm_tier,account_setting_type
+                    ref_npi, ref_name, congress_contributions, publications, clinical_trials, hco_grouping,hco_mdm_tier,account_setting_type,
+ref_hco_npi_mdm
     FROM "product_landing"."zolg_master_v2"
     WHERE 1=1
     """
@@ -242,6 +240,72 @@ def fetch_hco_360():
         query += " AND " + " AND ".join(filters)
 
     df = get_athena_data(query)  
+    return jsonify(df.to_dict(orient='records'))
+
+
+@app.route('/fetch-hcolandscape-kpicard', methods=['GET'])
+def fetch_hcolandscape_kpicard():
+    """
+    Fetch KPI Card Data for HCO
+    """
+    query = """
+   
+        SELECT 
+        COUNT(DISTINCT hco_mdm) AS hco_count,
+
+        -- Avg patients per HCO
+        (
+            SELECT AVG(patient_count) AS avg_patients_per_hco
+            FROM (
+            SELECT 
+                hco_mdm, 
+                COUNT(DISTINCT patient_id) AS patient_count
+            FROM "product_landing"."zolg_master"
+            GROUP BY hco_mdm
+            )
+        ) AS avg_patients_per_hco,
+
+        -- Total unique patients in last 12 months
+        (
+            SELECT COUNT(DISTINCT patient_id) AS total_patient_count
+            FROM "product_landing"."zolg_master"
+            WHERE DATE_PARSE(month, '%d-%m-%Y') >= DATE_ADD('month', -12, CURRENT_DATE)
+        ) AS pt_12_mth,
+
+        -- Count of non-null, non-dash ref_npi values
+        (
+            SELECT COUNT(DISTINCT ref_hco_npi_mdm)
+            FROM "product_landing"."zolg_master"
+            WHERE ref_hco_npi_mdm != '-'
+        ) AS ref_hco_npi_mdm,
+        (
+            SELECT COUNT(DISTINCT patient_id) AS total_patient_count
+            FROM "product_landing"."zolg_master"
+            WHERE DATE_PARSE(month, '%d-%m-%Y') >= DATE_ADD('month', -12, CURRENT_DATE) and 
+                ref_hco_npi_mdm !='-'
+        ) AS ref_pt_12_mth
+
+
+        FROM "product_landing"."zolg_master"
+    """
+    df = get_athena_data(query)
+    return jsonify(df.to_dict(orient='records'))
+
+
+@app.route('/fetch-hcolandscape-quater', methods=['GET'])
+def fetch_hcoquarterdata():
+    """
+    Fetch KPI Card Data for HCO
+    """
+    query = """
+      SELECT QUARTER(DATE_PARSE(month, '%d-%m-%Y')) AS quarter,
+           COUNT(DISTINCT patient_id) AS patient_count
+    FROM "product_landing"."zolg_master_v2"
+    WHERE YEAR(DATE_PARSE(month, '%d-%m-%Y')) = 2024 and hco_mdm!='-'
+    GROUP BY QUARTER(DATE_PARSE(month, '%d-%m-%Y'))
+    ORDER BY quarter DESC;
+    """
+    df = get_athena_data(query)
     return jsonify(df.to_dict(orient='records'))
 
 

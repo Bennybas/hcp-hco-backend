@@ -56,21 +56,15 @@ def fetch_map_data():
     Fetch Map Data from AWS Athena
     """
     query = """
-    WITH hcp_data AS (
-    SELECT hcp_state, COUNT(DISTINCT hcp_name) AS hcp_count 
-    FROM "product_landing"."zolg_master" GROUP BY hcp_state
-), 
-hco_data AS (
-    SELECT hco_state, COUNT(DISTINCT hco_mdm) AS hco_count
-    FROM "product_landing"."zolg_master" GROUP BY hco_state
-)
-SELECT DISTINCT zm.patient_id, zm.hcp_name, zm.hcp_city, zm.hcp_state, 
-       zm.hcp_zip, zm.hco_mdm, zm.hco_mdm_name, zm.rend_hco_lat, 
-       zm.rend_hco_long, zm.ref_hco_lat, zm.ref_hco_long, 
-       hcp_data.hcp_count, hco_data.hco_count
-FROM "product_landing"."zolg_master" zm
-LEFT JOIN hcp_data ON zm.hcp_state = hcp_data.hcp_state
-LEFT JOIN hco_data ON zm.hco_state = hco_data.hco_state
+  
+with uni as (
+select distinct hcp_id,hcp_state,hcp_zip,hco_mdm,hco_state,hco_postal_cd_prim,patient_id from zolg_master_v2
+union all 
+select distinct ref_npi,ref_hcp_state,ref_hcp_zip,ref_hco_npi_mdm,ref_hco_state,ref_hco_zip,patient_id from zolg_master_v2
+) select * from uni
+
+
+
     """
     df = get_athena_data(query)
     return jsonify(df.to_dict(orient='records'))

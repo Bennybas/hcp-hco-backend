@@ -36,18 +36,20 @@ def fetch_data():
     query = f"""
     SELECT DISTINCT hcp_id, zolg_prescriber, patient_id, drug_name, hcp_name, 
            hco_mdm, hco_mdm_name, hco_mdm_tier, hcp_segment, ref_npi, 
-           hcp_state, hco_state ,ref_hco_npi_mdm
+           hcp_state, hco_state ,ref_hco_npi_mdm,ref_hcp_state,
+ref_hco_state
     FROM "product_landing"."zolg_master"
     WHERE hcp_name = '{hcp_name}'
     """ if hcp_name else """
     SELECT DISTINCT hcp_id, zolg_prescriber, patient_id, drug_name, hcp_name, 
            hco_mdm, hco_mdm_name, hco_mdm_tier, hcp_segment, ref_npi, 
-           hcp_state, hco_state ,ref_hco_npi_mdm
+           hcp_state, hco_state ,ref_hco_npi_mdm,ref_hcp_state,ref_hco_state
     FROM "product_landing"."zolg_master"
     """
     
     df = get_athena_data(query)
     return jsonify(df.to_dict(orient='records'))
+
 
 
 @app.route('/fetch-map-data', methods=['GET'])
@@ -69,90 +71,103 @@ select distinct ref_npi,ref_hcp_state,ref_hcp_zip,ref_hco_npi_mdm,ref_hco_state,
     df = get_athena_data(query)
     return jsonify(df.to_dict(orient='records'))
 
-@app.route('/fetch-hcplandscape-quarterpat', methods=['GET'])
-def fetch_hcplandscape_quarterpat():
+
+@app.route('/fetch-hcplandscape', methods=['GET'])
+def fetch_hcplandscape():
     """
-    Fetch Patient Count by Quarter
+    Fetch Map Data from AWS Athena with optional filters: year, age_group, and drug_name
     """
-    query = """
-    SELECT QUARTER(DATE_PARSE(month, '%d-%m-%Y')) AS quarter,
-           COUNT(DISTINCT patient_id) AS patient_count
-    FROM "product_landing"."zolg_pat_hcp_data"
-    WHERE YEAR(DATE_PARSE(month, '%d-%m-%Y')) = 2024
-    GROUP BY QUARTER(DATE_PARSE(month, '%d-%m-%Y'))
-    ORDER BY quarter DESC;
+    year = request.args.get('year')
+    age = request.args.get('age')
+    drug = request.args.get('drug')
+
+    filters = []
+
+    if year and year.isdigit():
+        filters.append(f"year = '{year}'")
+
+    if age:
+        filters.append(f"age_group = '{age}'")
+
+    if drug:
+        filters.append(f"drug_name = '{drug}'")
+
+    where_clause = f"WHERE {' AND '.join(filters)}" if filters else ""
+
+    query = f"""
+        WITH a AS (
+            SELECT DISTINCT 
+                hcp_id AS rend_npi,
+                hcp_name,
+                ref_npi,
+                ref_name,
+                patient_id,
+                QUARTER(DATE_PARSE(month, '%d-%m-%Y')) AS quarter,
+                SPLIT_PART(mth, '_', 1) AS year,
+                drug_name,
+                age_group,
+                final_spec,
+                hcp_segment,
+                hco_mdm_name 
+            FROM "product_landing"."zolg_master_v2"
+        )
+        SELECT DISTINCT * FROM a
+        {where_clause}
     """
+
     df = get_athena_data(query)
     return jsonify(df.to_dict(orient='records'))
 
-@app.route('/fetch-hcplandscape-brand', methods=['GET'])
-def fetch_hcplandscape_brand():
+@app.route('/fetch-hcolandscape', methods=['GET'])
+def fetch_hcolandscape():
     """
-    Fetch Patient Count by Drug per Quarter
+    Fetch HCO Landscape Data from AWS Athena with Filters
     """
+    # Get filters from query parameters
+    year = request.args.get('year')
+    age_group = request.args.get('age_group')
+    drug_name = request.args.get('drug_name')
+    zolg_prescriber = request.args.get('zolg_prescriber')
+    zolgensma_iv_target = request.args.get('zolgensma_iv_target')
+    kol = request.args.get('kol')
+    hcp_segment = request.args.get('hcp_segment')
+    hco_state = request.args.get('hco_state')
+
+    # Base query
     query = """
-    SELECT QUARTER(DATE_PARSE(month, '%d-%m-%Y')) AS quarter,
-           COUNT(DISTINCT CASE WHEN drug_name = 'ZOLGENSMA' THEN patient_id END) AS ZOLGENSMA,
-           COUNT(DISTINCT CASE WHEN drug_name = 'EVRYSDI' THEN patient_id END) AS EVRYSDI,
-           COUNT(DISTINCT CASE WHEN drug_name = 'SPINRAZA' THEN patient_id END) AS SPINRAZA
-    FROM "product_landing"."zolg_pat_hcp_data"
-    WHERE YEAR(DATE_PARSE(month, '%d-%m-%Y')) = 2024
-    GROUP BY QUARTER(DATE_PARSE(month, '%d-%m-%Y'))
-    ORDER BY quarter DESC;
+        with a as(
+select distinct hco_mdm as rend_hco_npi,
+hco_mdm_name,
+ref_hco_npi_mdm,ref_organization_mdm_name,patient_id,QUARTER(DATE_PARSE(month, '%d-%m-%Y')) AS quarter,split_part(mth,'_',1) as year,
+drug_name,age_group,zolg_prescriber,zolgensma_iv_target,kol,hco_mdm_tier,hco_grouping,
+hco_state FROM "product_landing"."zolg_master_v2")
+select distinct * from a 
+        WHERE 1=1
     """
+
+    # Append filters dynamically
+    if year:
+        query += f" AND year = '{year}'"
+    if age_group:
+        query += f" AND age_group = '{age_group}'"
+    if drug_name:
+        query += f" AND drug_name = '{drug_name}'"
+    if zolg_prescriber:
+        query += f" AND zolg_prescriber = '{zolg_prescriber}'"
+    if zolgensma_iv_target:
+        query += f" AND zolgensma_iv_target = '{zolgensma_iv_target}'"
+    if kol:
+        query += f" AND kol = '{kol}'"
+    if hcp_segment:
+        query += f" AND hcp_segment = '{hcp_segment}'"
+    if hco_state:
+        query += f" AND hco_state = '{hco_state}'"
+
+    # Run the query
     df = get_athena_data(query)
+
+    # Return the result
     return jsonify(df.to_dict(orient='records'))
-
-@app.route('/fetch-hcplandscape-kpicard', methods=['GET'])
-def fetch_hcplandscape_kpicard():
-    """
-    Fetch KPI Card Data
-    """
-    query = """
-    select count(DISTINCT hcp_id) as hcp_id,
-
- (SELECT 
-  AVG(patient_count) AS avg_patients_per_hcp
-FROM (
-  SELECT 
-    hcp_id, 
-    COUNT(DISTINCT patient_id) AS patient_count
-  FROM "product_landing"."zolg_master"
-  GROUP BY hcp_id))AS patient_per_hcp,
-  (SELECT 
-  AVG(patient_count) AS avg_patients_per_hco
-FROM (
-  SELECT 
-    hco_mdm, 
-    COUNT(DISTINCT patient_id) AS patient_count
-  FROM "product_landing"."zolg_master"
-  GROUP BY hco_mdm))AS avg_patients_per_hco,
-  
-  (SELECT 
-    COUNT(DISTINCT patient_id) AS total_patient_count
-FROM "product_landing"."zolg_master"
-WHERE 
-    DATE_PARSE(month, '%d-%m-%Y') >= DATE_ADD('month', -12, CURRENT_DATE)) as pt_12_mth,
-    (select count(DISTINCT ref_npi) from "product_landing"."zolg_master" where ref_npi !='-') as ref_npi
-    
-    from  "product_landing"."zolg_master"
-    """
-    df = get_athena_data(query)
-    return jsonify(df.to_dict(orient='records'))
-
-@app.route('/fetch-hcplandscape-insights', methods=['GET'])
-def fetch_hcplandscape_insights():
-    """
-    Fetch HCP Landscape Insights
-    """
-    query = """
-    SELECT DISTINCT hcp_id, patient_id, age_group, final_spec, hcp_segment, 
-                    hco_mdm_name, hcp_name 
-    FROM "product_landing"."zolg_master"
-    """
-    df = get_athena_data(query)
-    return jsonify(df.to_dict(orient='records'))
-
 
 @app.route('/hcp-360', methods=['GET'])
 def fetch_hcp_360():
@@ -202,6 +217,7 @@ def fetch_hco_360():
     hcp_name = request.args.get('hcp_name')
     ref_npi = request.args.get('ref_npi')
     hco_mdm = request.args.get('hco_mdm')
+    ref_hco_npi_mdm = request.args.get('ref_hco_npi_mdm')
 
     query = """
     SELECT DISTINCT hcp_id, zolg_prescriber, zolgensma_iv_target, kol, patient_id, 
@@ -229,6 +245,8 @@ ref_hco_npi_mdm
         filters.append(f"ref_npi = '{ref_npi}'")
     if hco_mdm:
         filters.append(f"hco_mdm = '{hco_mdm}'")
+    if ref_hco_npi_mdm:
+        filters.append(f"ref_hco_npi_mdm ='{ref_hco_npi_mdm}'")
 
     if filters:
         query += " AND " + " AND ".join(filters)

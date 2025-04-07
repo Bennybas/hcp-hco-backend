@@ -24,7 +24,7 @@ def get_athena_data(query):
     df = pd.read_sql(query, conn)
     return df
 
-from flask import request  # Import request to handle parameters
+from flask import request
 
 @app.route('/fetch-data', methods=['GET'])
 def fetch_data():
@@ -59,13 +59,15 @@ def fetch_map_data():
     """
     query = """
   
+
 with uni as (
-select distinct hcp_id,hcp_state,hcp_zip,hco_mdm,hco_state,hco_postal_cd_prim,patient_id from zolg_master_v2
+select distinct hcp_id,hcp_state,hcp_zip,hco_mdm,hco_state,hco_postal_cd_prim,patient_id,
+hco_postal_cd_prim,rend_hco_lat,rend_hco_long,hco_mdm_name from zolg_master_v2
 union all 
-select distinct ref_npi,ref_hcp_state,ref_hcp_zip,ref_hco_npi_mdm,ref_hco_state,ref_hco_zip,patient_id from zolg_master_v2
+select distinct ref_npi,ref_hcp_state,ref_hcp_zip,ref_hco_npi_mdm,ref_hco_state,ref_hco_zip,patient_id,
+ref_hco_zip,ref_hco_lat,ref_hco_long,ref_organization_mdm_name
+ from zolg_master_v2
 ) select * from uni
-
-
 
     """
     df = get_athena_data(query)
@@ -255,70 +257,7 @@ ref_hco_npi_mdm
     return jsonify(df.to_dict(orient='records'))
 
 
-@app.route('/fetch-hcolandscape-kpicard', methods=['GET'])
-def fetch_hcolandscape_kpicard():
-    """
-    Fetch KPI Card Data for HCO
-    """
-    query = """
-   
-        SELECT 
-        COUNT(DISTINCT hco_mdm) AS hco_count,
 
-        -- Avg patients per HCO
-        (
-            SELECT AVG(patient_count) AS avg_patients_per_hco
-            FROM (
-            SELECT 
-                hco_mdm, 
-                COUNT(DISTINCT patient_id) AS patient_count
-            FROM "product_landing"."zolg_master"
-            GROUP BY hco_mdm
-            )
-        ) AS avg_patients_per_hco,
-
-        -- Total unique patients in last 12 months
-        (
-            SELECT COUNT(DISTINCT patient_id) AS total_patient_count
-            FROM "product_landing"."zolg_master"
-            WHERE DATE_PARSE(month, '%d-%m-%Y') >= DATE_ADD('month', -12, CURRENT_DATE)
-        ) AS pt_12_mth,
-
-        -- Count of non-null, non-dash ref_npi values
-        (
-            SELECT COUNT(DISTINCT ref_hco_npi_mdm)
-            FROM "product_landing"."zolg_master"
-            WHERE ref_hco_npi_mdm != '-'
-        ) AS ref_hco_npi_mdm,
-        (
-            SELECT COUNT(DISTINCT patient_id) AS total_patient_count
-            FROM "product_landing"."zolg_master"
-            WHERE DATE_PARSE(month, '%d-%m-%Y') >= DATE_ADD('month', -12, CURRENT_DATE) and 
-                ref_hco_npi_mdm !='-'
-        ) AS ref_pt_12_mth
-
-
-        FROM "product_landing"."zolg_master"
-    """
-    df = get_athena_data(query)
-    return jsonify(df.to_dict(orient='records'))
-
-
-@app.route('/fetch-hcolandscape-quater', methods=['GET'])
-def fetch_hcoquarterdata():
-    """
-    Fetch KPI Card Data for HCO
-    """
-    query = """
-      SELECT QUARTER(DATE_PARSE(month, '%d-%m-%Y')) AS quarter,
-           COUNT(DISTINCT patient_id) AS patient_count
-    FROM "product_landing"."zolg_master_v2"
-    WHERE YEAR(DATE_PARSE(month, '%d-%m-%Y')) = 2024 and hco_mdm!='-'
-    GROUP BY QUARTER(DATE_PARSE(month, '%d-%m-%Y'))
-    ORDER BY quarter DESC;
-    """
-    df = get_athena_data(query)
-    return jsonify(df.to_dict(orient='records'))
 
 
 if __name__ == '__main__':

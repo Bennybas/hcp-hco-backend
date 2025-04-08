@@ -90,10 +90,10 @@ def fetch_map_data():
     cache_key = "fetch-map-data"
     def query_fn():
         q = """
-        WITH uni AS (
+      WITH uni AS (
           SELECT DISTINCT hcp_id, hcp_state, hcp_zip, hco_mdm, hco_state,
                           hco_postal_cd_prim, patient_id, hco_postal_cd_prim,
-                          rend_hco_lat, rend_hco_long, hco_mdm_name
+                          rend_hco_lat, rend_hco_long, hco_mdm_name,hco_mdm_tier
           FROM zolg_master_v2
           UNION ALL
           SELECT DISTINCT ref_npi AS hcp_id, ref_hcp_state AS hcp_state,
@@ -101,7 +101,7 @@ def fetch_map_data():
                           ref_hco_state AS hco_state, ref_hco_zip AS hco_postal_cd_prim,
                           patient_id, ref_hco_zip AS hco_postal_cd_prim,
                           ref_hco_lat AS rend_hco_lat, ref_hco_long AS rend_hco_long,
-                          ref_organization_mdm_name AS hco_mdm_name
+                          ref_organization_mdm_name AS hco_mdm_name,hco_mdm_tier
           FROM zolg_master_v2
         )
         SELECT * FROM uni

@@ -61,7 +61,7 @@ def fetch_data():
             q = f"""
             SELECT DISTINCT hcp_id, zolg_prescriber, patient_id, drug_name, hcp_name, 
                    hco_mdm, hco_mdm_name, hco_mdm_tier, hcp_segment, ref_npi, 
-                   hcp_state, hco_state, ref_hco_npi_mdm, ref_hcp_state, ref_hco_state
+                   hcp_state, hco_state, ref_hco_npi_mdm, ref_hcp_state, ref_hco_state,final_spec,hco_grouping
             FROM "product_landing"."zolg_master"
             WHERE hcp_name = '{hcp_name}'
             """
@@ -69,7 +69,7 @@ def fetch_data():
             q = """
             SELECT DISTINCT hcp_id, zolg_prescriber, patient_id, drug_name, hcp_name, 
                    hco_mdm, hco_mdm_name, hco_mdm_tier, hcp_segment, ref_npi, 
-                   hcp_state, hco_state, ref_hco_npi_mdm, ref_hcp_state, ref_hco_state
+                   hcp_state, hco_state, ref_hco_npi_mdm, ref_hcp_state, ref_hco_state,final_spec,hco_grouping
             FROM "product_landing"."zolg_master"
             """
         df = get_athena_data(q)

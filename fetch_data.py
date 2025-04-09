@@ -149,7 +149,8 @@ def fetch_hcplandscape():
         where = f"WHERE {' AND '.join(filters)}" if filters else ""
 
         q = f"""
-        WITH a AS (
+       
+WITH a AS (
           SELECT DISTINCT 
             hcp_id AS rend_npi,
             hcp_name,
@@ -162,7 +163,7 @@ def fetch_hcplandscape():
             age_group,
             final_spec,
             hcp_segment,
-            hco_mdm_name 
+            hco_mdm_name ,ref_hcp_state,hcp_state
           FROM "product_landing"."zolg_master_v2"
         )
         SELECT DISTINCT * FROM a

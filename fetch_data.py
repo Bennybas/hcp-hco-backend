@@ -61,7 +61,7 @@ def fetch_data():
             q = f"""
             SELECT DISTINCT hcp_id, zolg_prescriber, patient_id, drug_name, hcp_name, 
                    hco_mdm, hco_mdm_name, hco_mdm_tier, hcp_segment, ref_npi, 
-                   hcp_state, hco_state, ref_hco_npi_mdm, ref_hcp_state, ref_hco_state,final_spec,hco_grouping
+                   hcp_state, hco_state, ref_hco_npi_mdm, ref_hcp_state, ref_hco_state,final_spec,hco_grouping,kol,SPLIT_PART(mth,'_',1) AS year
             FROM "product_landing"."zolg_master"
             WHERE hcp_name = '{hcp_name}'
             """
@@ -69,7 +69,7 @@ def fetch_data():
             q = """
             SELECT DISTINCT hcp_id, zolg_prescriber, patient_id, drug_name, hcp_name, 
                    hco_mdm, hco_mdm_name, hco_mdm_tier, hcp_segment, ref_npi, 
-                   hcp_state, hco_state, ref_hco_npi_mdm, ref_hcp_state, ref_hco_state,final_spec,hco_grouping
+                   hcp_state, hco_state, ref_hco_npi_mdm, ref_hcp_state, ref_hco_state,final_spec,hco_grouping,kol,SPLIT_PART(mth,'_',1) AS year
             FROM "product_landing"."zolg_master"
             """
         df = get_athena_data(q)
@@ -281,7 +281,8 @@ def fetch_hcp_360():
               COALESCE(hco_postal_cd_prim,'')
             ), ''
           ) AS address,
-          ref_npi, ref_name, congress_contributions, publications, clinical_trials
+          ref_npi, ref_name, congress_contributions, publications, clinical_trials,QUARTER(DATE_PARSE(month, '%d-%m-%Y')) AS quarter,
+            SPLIT_PART(mth,'_',1) AS year
         FROM "product_landing"."zolg_master_v2"
         WHERE 1=1
         """
@@ -340,7 +341,8 @@ def fetch_hco_360():
             ), ''
           ) AS address,
           ref_npi, ref_name, congress_contributions, publications, clinical_trials,
-          hco_grouping, hco_mdm_tier, account_setting_type, ref_hco_npi_mdm
+          hco_grouping, hco_mdm_tier, account_setting_type, ref_hco_npi_mdm,QUARTER(DATE_PARSE(month, '%d-%m-%Y')) AS quarter,
+            SPLIT_PART(mth,'_',1) AS year
         FROM "product_landing"."zolg_master_v2"
         WHERE 1=1
         """

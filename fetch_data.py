@@ -61,16 +61,16 @@ def fetch_data():
             q = f"""
             SELECT DISTINCT hcp_id, zolg_prescriber, patient_id, drug_name, hcp_name, 
                    hco_mdm, hco_mdm_name, hco_mdm_tier, hcp_segment, ref_npi, 
-                   hcp_state, hco_state, ref_hco_npi_mdm, ref_hcp_state, ref_hco_state,final_spec,hco_grouping,kol,SPLIT_PART(mth,'_',1) AS year
-            FROM "product_landing"."zolg_master"
+                   hcp_state, hco_state, ref_hco_npi_mdm, ref_hcp_state, ref_hco_state,final_spec,hco_grouping,zolgensma_iv_target,SPLIT_PART(mth,'_',1) AS year,rend_hco_territory,ref_hco_territory
+            FROM "product_landing"."zolg_master_v3"
             WHERE hcp_name = '{hcp_name}'
             """
         else:
             q = """
             SELECT DISTINCT hcp_id, zolg_prescriber, patient_id, drug_name, hcp_name, 
                    hco_mdm, hco_mdm_name, hco_mdm_tier, hcp_segment, ref_npi, 
-                   hcp_state, hco_state, ref_hco_npi_mdm, ref_hcp_state, ref_hco_state,final_spec,hco_grouping,kol,SPLIT_PART(mth,'_',1) AS year
-            FROM "product_landing"."zolg_master"
+                   hcp_state, hco_state, ref_hco_npi_mdm, ref_hcp_state, ref_hco_state,final_spec,hco_grouping,zolgensma_iv_target,SPLIT_PART(mth,'_',1) AS year,rend_hco_territory,ref_hco_territory
+            FROM "product_landing"."zolg_master_v3"
             """
         df = get_athena_data(q)
         return df.to_dict(orient='records')
@@ -95,16 +95,16 @@ def fetch_map_data():
 WITH uni AS (
           SELECT DISTINCT hcp_id, hcp_state, hcp_zip, hco_mdm, hco_state,
                           hco_postal_cd_prim, patient_id, hco_postal_cd_prim,
-                          rend_hco_lat, rend_hco_long, hco_mdm_name,hco_grouping
-          FROM zolg_master_v2
+                          rend_hco_lat, rend_hco_long, hco_mdm_name,hco_grouping,rend_hco_territory,SPLIT_PART(mth,'_',1) AS year
+          FROM zolg_master_v3
           UNION ALL
           SELECT DISTINCT ref_npi AS hcp_id, ref_hcp_state AS hcp_state,
                           ref_hcp_zip AS hcp_zip, ref_hco_npi_mdm AS hco_mdm,
                           ref_hco_state AS hco_state, ref_hco_zip AS hco_postal_cd_prim,
                           patient_id, ref_hco_zip AS hco_postal_cd_prim,
                           ref_hco_lat AS rend_hco_lat, ref_hco_long AS rend_hco_long,
-                          ref_organization_mdm_name AS hco_mdm_name,hco_grouping
-          FROM zolg_master_v2
+                          ref_organization_mdm_name AS hco_mdm_name,hco_grouping,ref_hco_territory,SPLIT_PART(mth,'_',1) AS year
+          FROM zolg_master_v3
         )
         SELECT * FROM uni
 
@@ -374,8 +374,8 @@ def fetch_referal_data():
           ref_npi, ref_name, ref_hcp_state, ref_hcp_zip, ref_hco_npi_mdm,
           ref_hco_state, ref_hco_zip, ref_hco_lat, ref_hco_long,
           ref_organization_mdm_name, hcp_segment, final_spec,
-          hco_grouping, hco_mdm_tier
-        FROM zolg_master_v2
+          hco_grouping, hco_mdm_tier, SPLIT_PART(mth,'_',1) AS year,rend_hco_territory,ref_hco_territory
+        FROM zolg_master_v3
         """
         df = get_athena_data(q)
         return df.to_dict(orient='records')

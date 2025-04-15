@@ -162,16 +162,21 @@ def scheduled_cache_update():
         # Sleep for the cache refresh interval
         time.sleep(CACHE_REFRESH_INTERVAL)
 
-# Start the cache update thread when the app is initialized
-with app.app_context():
-    # Immediate first cache update
-    update_cache()
-    
-    # Start the periodic cache update in a separate thread
-    thread = threading.Thread(target=scheduled_cache_update)
-    thread.daemon = True  # This ensures the thread will exit when the main process exits
-    thread.start()
-    logger.info("Cache update scheduler started")
+# Initialize cache function - replaces @app.before_first_request
+def initialize_cache(app):
+    """Initialize the cache when the application starts"""
+    with app.app_context():
+        # Immediate first cache update
+        update_cache()
+        
+        # Start the periodic cache update in a separate thread
+        thread = threading.Thread(target=scheduled_cache_update)
+        thread.daemon = True  # This ensures the thread will exit when the main process exits
+        thread.start()
+        logger.info("Cache update scheduler started")
+
+# Call the initialization function after app creation
+initialize_cache(app)
 
 @app.route('/fetch-data', methods=['GET'])
 def fetch_data():
@@ -525,4 +530,7 @@ def fetch_referal_data():
     return cached_jsonify(cache_key, query_fn)
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    # Get port from environment variable or default to 10000
+    port = int(os.environ.get('PORT', 10000))
+    # Bind to all interfaces (0.0.0.0) instead of just localhost
+    app.run(host='0.0.0.0', port=port, debug=False)

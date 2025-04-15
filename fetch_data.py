@@ -163,9 +163,7 @@ def scheduled_cache_update():
         time.sleep(CACHE_REFRESH_INTERVAL)
 
 # Start the cache update thread when the app is initialized
-@app.before_first_request
-def initialize_cache():
-    """Initialize the cache before handling the first request"""
+with app.app_context():
     # Immediate first cache update
     update_cache()
     

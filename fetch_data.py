@@ -7,314 +7,174 @@ from dotenv import load_dotenv
 import os
 import time
 import threading
+import datetime
 import logging
-import queue
-import concurrent.futures
-from datetime import datetime
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+# Set up logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Load environment variables from .env file
 load_dotenv()
 
 app = Flask(__name__)
 CORS(app)
 swagger = Swagger(app)
 
-# Request-level cache with timestamps
+# Global cache storage
 data_cache = {}
-# Cache lock for thread safety
-cache_lock = threading.RLock()
-# Cache duration in seconds (Default: 1 hour)
-CACHE_DURATION = int(os.getenv("CACHE_DURATION", "3600"))
-# Refresh interval in seconds (Default: 55 minutes - slightly less than cache duration)
-REFRESH_INTERVAL = int(os.getenv("REFRESH_INTERVAL", str(CACHE_DURATION - 300)))
-# Thread pool for executing queries
-executor = concurrent.futures.ThreadPoolExecutor(max_workers=3)
-# Queue for background refresh tasks
-refresh_queue = queue.Queue()
-# Flag to control background threads
-running = True
+# Cache refresh interval in seconds (1 hour)
+CACHE_REFRESH_INTERVAL = 3600
 
 def get_athena_data(query):
-    """Connect to Athena and execute query"""
-    try:
-        conn = connect(
-            aws_access_key_id=os.getenv("ATHENA_ACCESS_KEY"),
-            aws_secret_access_key=os.getenv("ATHENA_SECRET_KEY"),
-            region_name=os.getenv("ATHENA_REGION"),
-            s3_staging_dir=os.getenv("S3_STAGING_DIR"),
-            schema_name=os.getenv("ATHENA_DATABASE")
-        )
-        df = pd.read_sql(query, conn)
-        return df
-    except Exception as e:
-        logger.error(f"Error executing Athena query: {str(e)}")
-        logger.error(f"Query: {query}")
-        raise
+    """Execute query on AWS Athena and return results as DataFrame"""
+    conn = connect(
+        aws_access_key_id=os.getenv("ATHENA_ACCESS_KEY"),
+        aws_secret_access_key=os.getenv("ATHENA_SECRET_KEY"),
+        region_name=os.getenv("ATHENA_REGION"),
+        s3_staging_dir=os.getenv("S3_STAGING_DIR"),
+        schema_name=os.getenv("ATHENA_DATABASE")
+    )
+    df = pd.read_sql(query, conn)
+    return df
 
-def cached_query(cache_key, query_func):
+def cached_jsonify(cache_key, query_fn):
     """
-    Check cache, optionally refresh, run query_func if needed, cache results
+    Helper: check cache, optionally refresh, run query_fn() if needed, cache & return JSON.
+    Used for non-cached endpoints.
     """
     refresh = request.args.get("refresh", "false").lower() == "true"
-    current_time = time.time()
+    if cache_key in data_cache and not refresh:
+        return jsonify(data_cache[cache_key])
+
+    # run the provided query function
+    records = query_fn()
+    data_cache[cache_key] = records
+    return jsonify(records)
+
+def update_cache():
+    """Update all cache entries for the main APIs"""
+    logger.info("Starting cache refresh at %s", datetime.datetime.now())
     
-    # Thread-safe cache access
-    with cache_lock:
-        # Check if data exists in cache and is not expired
-        if not refresh and cache_key in data_cache:
-            cached_time, cached_data = data_cache[cache_key]
-            # Check if cache is still valid
-            if current_time - cached_time < CACHE_DURATION:
-                logger.info(f"Using cached data for {cache_key}")
-                return cached_data
-    
-    # Data not in cache, expired, or refresh requested - execute query
-    logger.info(f"Executing query for {cache_key}")
+    # Refresh fetch-data for all HCPs (no specific HCP name)
     try:
-        result = query_func()
-        
-        # Store result in cache with timestamp
-        with cache_lock:
-            data_cache[cache_key] = (current_time, result)
-            
-        # Add to refresh queue for future background refresh
-        refresh_queue.put((cache_key, query_func))
-        
-        return result
-    except Exception as e:
-        logger.error(f"Error in cached_query for {cache_key}: {str(e)}")
-        # If we have stale data, return it rather than failing
-        with cache_lock:
-            if cache_key in data_cache:
-                logger.warning(f"Returning stale data for {cache_key} due to query error")
-                return data_cache[cache_key][1]
-        # No cached data available, re-raise the exception
-        raise
-
-def background_refresh_worker():
-    """Worker thread that refreshes cache entries before they expire"""
-    logger.info("Starting background refresh worker")
-    
-    # Keep track of when each key should be refreshed next
-    refresh_schedule = {}
-    
-    while running:
-        try:
-            # Check if there are new items in the queue
-            try:
-                # Non-blocking queue check
-                cache_key, query_func = refresh_queue.get(block=False)
-                # Schedule this key for refresh at appropriate time
-                next_refresh = time.time() + REFRESH_INTERVAL
-                refresh_schedule[cache_key] = (next_refresh, query_func)
-                logger.info(f"Scheduled {cache_key} for refresh at {datetime.fromtimestamp(next_refresh)}")
-                refresh_queue.task_done()
-            except queue.Empty:
-                # No new items, continue with scheduled refreshes
-                pass
-            
-            # Check if any scheduled refreshes are due
-            current_time = time.time()
-            keys_to_refresh = []
-            
-            for key, (refresh_time, func) in refresh_schedule.items():
-                if current_time >= refresh_time:
-                    keys_to_refresh.append((key, func))
-            
-            # Remove the keys we're about to refresh from the schedule
-            for key, _ in keys_to_refresh:
-                del refresh_schedule[key]
-            
-            # Submit refresh tasks to thread pool
-            for key, func in keys_to_refresh:
-                executor.submit(refresh_cache_entry, key, func)
-            
-            # Sleep briefly to avoid busy waiting
-            time.sleep(5)
-            
-        except Exception as e:
-            logger.error(f"Error in background refresh worker: {str(e)}")
-            time.sleep(30)  # Sleep longer on error
-
-def refresh_cache_entry(cache_key, query_func):
-    """Refresh a single cache entry"""
-    try:
-        logger.info(f"Background refresh for {cache_key}")
-        result = query_func()
-        current_time = time.time()
-        
-        with cache_lock:
-            data_cache[cache_key] = (current_time, result)
-        
-        # Re-add to refresh queue for next cycle
-        next_refresh = time.time() + REFRESH_INTERVAL
-        refresh_schedule = {cache_key: (next_refresh, query_func)}
-        logger.info(f"Successfully refreshed {cache_key}, next refresh at {datetime.fromtimestamp(next_refresh)}")
-        
-    except Exception as e:
-        logger.error(f"Error refreshing cache for {cache_key}: {str(e)}")
-        # Schedule a retry sooner than normal
-        next_refresh = time.time() + 300  # 5 minutes
-        refresh_schedule = {cache_key: (next_refresh, query_func)}
-        logger.info(f"Will retry {cache_key} at {datetime.fromtimestamp(next_refresh)}")
-
-def preload_common_queries():
-    """Preload the most commonly used queries into cache on startup"""
-    logger.info("Preloading common queries into cache")
-    
-    # List of common queries to preload
-    common_queries = [
-        ("fetch-map-data", lambda: fetch_map_data_query()),
-        ("fetch-data-all", lambda: fetch_data_query(None)),
-        ("hcplandscape-all-all-all", lambda: fetch_hcplandscape_query(None, None, None)),
-        ("hcolandscape-all-all-all-all-all-all-all-all", lambda: fetch_hcolandscape_query({}))
-    ]
-    
-    # Submit each query to the thread pool
-    futures = []
-    for key, func in common_queries:
-        futures.append(executor.submit(preload_cache_entry, key, func))
-    
-    # Wait for all preload tasks to complete
-    for future in concurrent.futures.as_completed(futures):
-        try:
-            future.result()
-        except Exception as e:
-            logger.error(f"Error in preload task: {str(e)}")
-
-def preload_cache_entry(cache_key, query_func):
-    """Preload a single cache entry"""
-    try:
-        logger.info(f"Preloading {cache_key}")
-        result = query_func()
-        current_time = time.time()
-        
-        with cache_lock:
-            data_cache[cache_key] = (current_time, result)
-        
-        # Add to refresh queue for future background refresh
-        refresh_queue.put((cache_key, query_func))
-        logger.info(f"Successfully preloaded {cache_key}")
-        
-    except Exception as e:
-        logger.error(f"Error preloading cache for {cache_key}: {str(e)}")
-
-# Query function implementations
-def fetch_data_query(hcp_name):
-    if hcp_name:
-        q = f"""
-        SELECT DISTINCT hcp_id, zolg_prescriber, patient_id, drug_name, hcp_name, 
-               hco_mdm, hco_mdm_name, hco_mdm_tier, hcp_segment, ref_npi, 
-               hcp_state, hco_state, ref_hco_npi_mdm, ref_hcp_state, ref_hco_state,
-               final_spec, hco_grouping, zolgensma_iv_target, 
-               SPLIT_PART(mth,'_',1) AS year, rend_hco_territory, ref_hco_territory
-        FROM "product_landing"."zolg_master_v3" 
-        WHERE hcp_name = '{hcp_name}'
-        """
-    else:
         q = """
         SELECT DISTINCT hcp_id, zolg_prescriber, patient_id, drug_name, hcp_name, 
                hco_mdm, hco_mdm_name, hco_mdm_tier, hcp_segment, ref_npi, 
-               hcp_state, hco_state, ref_hco_npi_mdm, ref_hcp_state, ref_hco_state,
-               final_spec, hco_grouping, zolgensma_iv_target, 
-               SPLIT_PART(mth,'_',1) AS year, rend_hco_territory, ref_hco_territory
+               hcp_state, hco_state, ref_hco_npi_mdm, ref_hcp_state, ref_hco_state,final_spec,hco_grouping,zolgensma_iv_target,SPLIT_PART(mth,'_',1) AS year,rend_hco_territory,ref_hco_territory
         FROM "product_landing"."zolg_master_v3"
         """
-    df = get_athena_data(q)
-    return df.to_dict(orient='records')
-
-def fetch_map_data_query():
-    q = """
-    WITH uni AS (
-      SELECT DISTINCT hcp_id, hcp_state, hcp_zip, hco_mdm, hco_state,
-                      hco_postal_cd_prim, patient_id, hco_postal_cd_prim,
-                      rend_hco_lat, rend_hco_long, hco_mdm_name,hco_grouping,rend_hco_territory,SPLIT_PART(mth,'_',1) AS year,hcp_segment
-    FROM zolg_master_v3 
-      UNION ALL
-      SELECT DISTINCT ref_npi AS hcp_id, ref_hcp_state AS hcp_state,
-                      ref_hcp_zip AS hcp_zip, ref_hco_npi_mdm AS hco_mdm,
-                      ref_hco_state AS hco_state, ref_hco_zip AS hco_postal_cd_prim,
-                      patient_id, ref_hco_zip AS hco_postal_cd_prim,
-                      ref_hco_lat AS rend_hco_lat, ref_hco_long AS rend_hco_long,
-                      ref_organization_mdm_name AS hco_mdm_name,hco_grouping,ref_hco_territory,SPLIT_PART(mth,'_',1) AS year,hcp_segment
-      FROM zolg_master_v3
-    )
-    SELECT * FROM uni
-    """
-    df = get_athena_data(q)
-    return df.to_dict(orient='records')
-
-def fetch_hcplandscape_query(year, age, drug):
-    filters = []
-    if year and year.isdigit():
-        filters.append(f"year = '{year}'")
-    if age:
-        filters.append(f"age_group = '{age}'")
-    if drug:
-        filters.append(f"drug_name = '{drug}'")
-    where = f"WHERE {' AND '.join(filters)}" if filters else ""
+        df = get_athena_data(q)
+        data_cache["fetch-data-all"] = df.to_dict(orient='records')
+        logger.info("Updated cache for fetch-data-all")
+    except Exception as e:
+        logger.error("Error updating fetch-data-all: %s", str(e))
     
-    q = f"""
-    WITH a AS (
-      SELECT DISTINCT 
-        hcp_id AS rend_npi,
-        hcp_name,
-        ref_npi,
-        ref_name,
-        patient_id,
-        QUARTER(DATE_PARSE(month, '%d-%m-%Y')) AS quarter,
-        SPLIT_PART(mth, '_', 1) AS year,
-        drug_name,
-        age_group,
-        final_spec,
-        hcp_segment,
-        hco_mdm_name ,ref_hcp_state,hcp_state,zolgensma_naive
-      FROM "product_landing"."zolg_master_v4"
-    )
-    SELECT DISTINCT * FROM a
-    {where}
-    """
-    df = get_athena_data(q)
-    return df.to_dict(orient='records')
+    # Refresh fetch-map-data
+    try:
+        q = """
+        WITH uni AS (
+          SELECT DISTINCT hcp_id, hcp_state, hcp_zip, hco_mdm, hco_state,
+                          hco_postal_cd_prim, patient_id, hco_postal_cd_prim,
+                          rend_hco_lat, rend_hco_long, hco_mdm_name,hco_grouping,rend_hco_territory,SPLIT_PART(mth,'_',1) AS year,hcp_segment
+        FROM zolg_master_v3 
+          UNION ALL
+          SELECT DISTINCT ref_npi AS hcp_id, ref_hcp_state AS hcp_state,
+                          ref_hcp_zip AS hcp_zip, ref_hco_npi_mdm AS hco_mdm,
+                          ref_hco_state AS hco_state, ref_hco_zip AS hco_postal_cd_prim,
+                          patient_id, ref_hco_zip AS hco_postal_cd_prim,
+                          ref_hco_lat AS rend_hco_lat, ref_hco_long AS rend_hco_long,
+                          ref_organization_mdm_name AS hco_mdm_name,hco_grouping,ref_hco_territory,SPLIT_PART(mth,'_',1) AS year,hcp_segment
+          FROM zolg_master_v3
+        )
+        SELECT * FROM uni
+        """
+        df = get_athena_data(q)
+        data_cache["fetch-map-data"] = df.to_dict(orient='records')
+        logger.info("Updated cache for fetch-map-data")
+    except Exception as e:
+        logger.error("Error updating fetch-map-data: %s", str(e))
+    
+    # Refresh fetch-hcplandscape (default with no filters)
+    try:
+        q = """
+        WITH a AS (
+          SELECT DISTINCT 
+            hcp_id AS rend_npi,
+            hcp_name,
+            ref_npi,
+            ref_name,
+            patient_id,
+            QUARTER(DATE_PARSE(month, '%d-%m-%Y')) AS quarter,
+            SPLIT_PART(mth, '_', 1) AS year,
+            drug_name,
+            age_group,
+            final_spec,
+            hcp_segment,
+            hco_mdm_name ,ref_hcp_state,hcp_state,zolgensma_naive
+          FROM "product_landing"."zolg_master_v4"
+        )
+        SELECT DISTINCT * FROM a
+        """
+        df = get_athena_data(q)
+        data_cache["hcplandscape-all-all-all"] = df.to_dict(orient='records')
+        logger.info("Updated cache for hcplandscape-all-all-all")
+    except Exception as e:
+        logger.error("Error updating hcplandscape: %s", str(e))
+    
+    # Refresh fetch-hcolandscape (default with no filters)
+    try:
+        q = """
+        WITH a AS (
+          SELECT DISTINCT
+            hco_mdm AS rend_hco_npi,
+            hco_mdm_name,
+            ref_hco_npi_mdm,
+            ref_organization_mdm_name,
+            patient_id,
+            QUARTER(DATE_PARSE(month, '%d-%m-%Y')) AS quarter,
+            SPLIT_PART(mth,'_',1) AS year,
+            drug_name,
+            age_group,
+            zolg_prescriber,
+            zolgensma_iv_target,
+            kol,
+            hco_mdm_tier,
+            hco_grouping,
+            hco_state,zolgensma_naive,hcp_id
+          FROM "product_landing"."zolg_master_v4"
+        )
+        SELECT DISTINCT * FROM a
+        WHERE 1=1
+        """
+        df = get_athena_data(q)
+        data_cache["hcolandscape-all-all-all-all-all-all-all-all"] = df.to_dict(orient='records')
+        logger.info("Updated cache for hcolandscape (default)")
+    except Exception as e:
+        logger.error("Error updating hcolandscape: %s", str(e))
+    
+    logger.info("Completed cache refresh at %s", datetime.datetime.now())
 
-def fetch_hcolandscape_query(params):
-    q = """
-    WITH a AS (
-      SELECT DISTINCT
-        hco_mdm AS rend_hco_npi,
-        hco_mdm_name,
-        ref_hco_npi_mdm,
-        ref_organization_mdm_name,
-        patient_id,
-        QUARTER(DATE_PARSE(month, '%d-%m-%Y')) AS quarter,
-        SPLIT_PART(mth,'_',1) AS year,
-        drug_name,
-        age_group,
-        zolg_prescriber,
-        zolgensma_iv_target,
-        kol,
-        hco_mdm_tier,
-        hco_grouping,
-        hco_state,zolgensma_naive,hcp_id
-      FROM "product_landing"."zolg_master_v4"
-    )
-    SELECT DISTINCT * FROM a
-    WHERE 1=1
-    """
-    for param, val in params.items():
-        if val:
-            q += f" AND {param} = '{val}'"
-    df = get_athena_data(q)
-    return df.to_dict(orient='records')
+def scheduled_cache_update():
+    """Function to run the cache update on a schedule"""
+    while True:
+        # Update all caches
+        update_cache()
+        # Sleep for the cache refresh interval
+        time.sleep(CACHE_REFRESH_INTERVAL)
 
-# Route handlers
+# Start the cache update thread when the app is initialized
+@app.before_first_request
+def initialize_cache():
+    """Initialize the cache before handling the first request"""
+    # Immediate first cache update
+    update_cache()
+    
+    # Start the periodic cache update in a separate thread
+    thread = threading.Thread(target=scheduled_cache_update)
+    thread.daemon = True  # This ensures the thread will exit when the main process exits
+    thread.start()
+    logger.info("Cache update scheduler started")
+
 @app.route('/fetch-data', methods=['GET'])
 def fetch_data():
     """
@@ -329,10 +189,27 @@ def fetch_data():
         type: boolean
     """
     hcp_name = request.args.get('hcp_name')
+    refresh = request.args.get("refresh", "false").lower() == "true"
+    
     cache_key = f"fetch-data-{hcp_name or 'all'}"
     
-    data = cached_query(cache_key, lambda: fetch_data_query(hcp_name))
-    return jsonify(data)
+    # If specific HCP requested and not in cache, or refresh requested
+    if (hcp_name and (cache_key not in data_cache or refresh)):
+        q = f"""
+        SELECT DISTINCT hcp_id, zolg_prescriber, patient_id, drug_name, hcp_name, 
+               hco_mdm, hco_mdm_name, hco_mdm_tier, hcp_segment, ref_npi, 
+               hcp_state, hco_state, ref_hco_npi_mdm, ref_hcp_state, ref_hco_state,final_spec,hco_grouping,zolgensma_iv_target,SPLIT_PART(mth,'_',1) AS year,rend_hco_territory,ref_hco_territory
+        FROM "product_landing"."zolg_master_v3"
+        WHERE hcp_name = '{hcp_name}'
+        """
+        df = get_athena_data(q)
+        data_cache[cache_key] = df.to_dict(orient='records')
+    
+    # Return from cache if it exists, otherwise return empty list
+    if cache_key in data_cache:
+        return jsonify(data_cache[cache_key])
+    else:
+        return jsonify([])
 
 @app.route('/fetch-map-data', methods=['GET'])
 def fetch_map_data():
@@ -344,10 +221,19 @@ def fetch_map_data():
         in: query
         type: boolean
     """
+    refresh = request.args.get("refresh", "false").lower() == "true"
     cache_key = "fetch-map-data"
     
-    data = cached_query(cache_key, fetch_map_data_query)
-    return jsonify(data)
+    # If refresh requested or not in cache, run the query
+    if refresh or cache_key not in data_cache:
+        # This should normally not happen as the cache is refreshed periodically
+        update_cache()
+    
+    # Return from cache if it exists, otherwise return empty list
+    if cache_key in data_cache:
+        return jsonify(data_cache[cache_key])
+    else:
+        return jsonify([])
 
 @app.route('/fetch-hcplandscape', methods=['GET'])
 def fetch_hcplandscape():
@@ -371,11 +257,53 @@ def fetch_hcplandscape():
     year = request.args.get('year')
     age = request.args.get('age')
     drug = request.args.get('drug')
-    # Create cache key based on filters
+    refresh = request.args.get("refresh", "false").lower() == "true"
+    
     cache_key = f"hcplandscape-{year or 'all'}-{age or 'all'}-{drug or 'all'}"
     
-    data = cached_query(cache_key, lambda: fetch_hcplandscape_query(year, age, drug))
-    return jsonify(data)
+    # If specific filters requested and not in cache, or refresh requested
+    if (year or age or drug) and (cache_key not in data_cache or refresh):
+        filters = []
+        if year and year.isdigit():
+            filters.append(f"year = '{year}'")
+        if age:
+            filters.append(f"age_group = '{age}'")
+        if drug:
+            filters.append(f"drug_name = '{drug}'")
+        where = f"WHERE {' AND '.join(filters)}" if filters else ""
+
+        q = f"""
+        WITH a AS (
+          SELECT DISTINCT 
+            hcp_id AS rend_npi,
+            hcp_name,
+            ref_npi,
+            ref_name,
+            patient_id,
+            QUARTER(DATE_PARSE(month, '%d-%m-%Y')) AS quarter,
+            SPLIT_PART(mth, '_', 1) AS year,
+            drug_name,
+            age_group,
+            final_spec,
+            hcp_segment,
+            hco_mdm_name ,ref_hcp_state,hcp_state,zolgensma_naive
+          FROM "product_landing"."zolg_master_v4"
+        )
+        SELECT DISTINCT * FROM a
+        {where}
+        """
+        df = get_athena_data(q)
+        data_cache[cache_key] = df.to_dict(orient='records')
+    
+    # Return from cache if it exists, otherwise return empty list
+    if cache_key in data_cache:
+        return jsonify(data_cache[cache_key])
+    else:
+        # Try to return the default (all) data if specific cache not found
+        if "hcplandscape-all-all-all" in data_cache:
+            return jsonify(data_cache["hcplandscape-all-all-all"])
+        else:
+            return jsonify([])
 
 @app.route('/fetch-hcolandscape', methods=['GET'])
 def fetch_hcolandscape():
@@ -415,11 +343,53 @@ def fetch_hcolandscape():
         'year','age_group','drug_name','zolg_prescriber',
         'zolgensma_iv_target','kol','hcp_segment','hco_state'
     ]}
+    refresh = request.args.get("refresh", "false").lower() == "true"
+    
+    has_filters = any(params.values())
     key_parts = [params[k] or 'all' for k in params]
     cache_key = "hcolandscape-" + "-".join(key_parts)
     
-    data = cached_query(cache_key, lambda: fetch_hcolandscape_query(params))
-    return jsonify(data)
+    # If specific filters requested and not in cache, or refresh requested
+    if has_filters and (cache_key not in data_cache or refresh):
+        q = """
+        WITH a AS (
+          SELECT DISTINCT
+            hco_mdm AS rend_hco_npi,
+            hco_mdm_name,
+            ref_hco_npi_mdm,
+            ref_organization_mdm_name,
+            patient_id,
+            QUARTER(DATE_PARSE(month, '%d-%m-%Y')) AS quarter,
+            SPLIT_PART(mth,'_',1) AS year,
+            drug_name,
+            age_group,
+            zolg_prescriber,
+            zolgensma_iv_target,
+            kol,
+            hco_mdm_tier,
+            hco_grouping,
+            hco_state,zolgensma_naive,hcp_id
+          FROM "product_landing"."zolg_master_v4"
+        )
+        SELECT DISTINCT * FROM a
+        WHERE 1=1
+        """
+        for param, val in params.items():
+            if val:
+                q += f" AND {param} = '{val}'"
+        df = get_athena_data(q)
+        data_cache[cache_key] = df.to_dict(orient='records')
+    
+    # Return from cache if it exists, otherwise return empty list
+    if cache_key in data_cache:
+        return jsonify(data_cache[cache_key])
+    else:
+        # Try to return the default (all) data if specific cache not found
+        default_key = "hcolandscape-all-all-all-all-all-all-all-all"
+        if default_key in data_cache:
+            return jsonify(data_cache[default_key])
+        else:
+            return jsonify([])
 
 @app.route('/hcp-360', methods=['GET'])
 def fetch_hcp_360():
@@ -440,8 +410,8 @@ def fetch_hcp_360():
     hcp_name = request.args.get('hcp_name')
     ref_npi = request.args.get('ref_npi')
     cache_key = f"hcp360-{hcp_name or 'none'}-{ref_npi or 'none'}"
-    
-    def query_func():
+
+    def query_fn():
         q = """
         SELECT DISTINCT
           hcp_id, zolg_prescriber, zolgensma_iv_target, kol, patient_id,
@@ -466,9 +436,8 @@ def fetch_hcp_360():
             q += f" AND ref_npi = '{ref_npi}'"
         df = get_athena_data(q)
         return df.to_dict(orient='records')
-    
-    data = cached_query(cache_key, query_func)
-    return jsonify(data)
+
+    return cached_jsonify(cache_key, query_fn)
 
 @app.route('/hco-360', methods=['GET'])
 def fetch_hco_360():
@@ -500,8 +469,8 @@ def fetch_hco_360():
     }
     key_parts = [params[k] or 'none' for k in params]
     cache_key = "hco360-" + "-".join(key_parts)
-    
-    def query_func():
+
+    def query_fn():
         q = """
         SELECT DISTINCT
           hcp_id, zolg_prescriber, zolgensma_iv_target, kol, patient_id,
@@ -527,9 +496,8 @@ def fetch_hco_360():
                 q += f" AND {param} = '{val}'"
         df = get_athena_data(q)
         return df.to_dict(orient='records')
-    
-    data = cached_query(cache_key, query_func)
-    return jsonify(data)
+
+    return cached_jsonify(cache_key, query_fn)
 
 @app.route('/fetch-refer-data', methods=['GET'])
 def fetch_referal_data():
@@ -542,8 +510,7 @@ def fetch_referal_data():
         type: boolean
     """
     cache_key = "fetch-refer-data"
-    
-    def query_func():
+    def query_fn():
         q = """
         SELECT DISTINCT
           patient_id, hcp_id, hcp_name, hcp_state, hcp_zip, hco_mdm, hco_state,
@@ -556,76 +523,8 @@ def fetch_referal_data():
         """
         df = get_athena_data(q)
         return df.to_dict(orient='records')
-    
-    data = cached_query(cache_key, query_func)
-    return jsonify(data)
 
-# Health check endpoint
-@app.route('/health', methods=['GET'])
-def health():
-    """Simple health check endpoint"""
-    return jsonify({
-        "status": "ok", 
-        "cache_entries": len(data_cache),
-        "refresh_queue_size": refresh_queue.qsize()
-    })
-
-# Status endpoint to see cache status
-@app.route('/cache-status', methods=['GET'])
-def cache_status():
-    """View cache status"""
-    cache_info = {}
-    current_time = time.time()
-    
-    with cache_lock:
-        for key, (timestamp, _) in data_cache.items():
-            age = current_time - timestamp
-            expiry = CACHE_DURATION - age
-            cache_info[key] = {
-                "age_seconds": round(age),
-                "expires_in_seconds": round(expiry),
-                "is_fresh": expiry > 0
-            }
-    
-    return jsonify({
-        "cache_entries": len(data_cache),
-        "cache_duration_seconds": CACHE_DURATION,
-        "refresh_interval_seconds": REFRESH_INTERVAL,
-        "refresh_queue_size": refresh_queue.qsize(),
-        "entries": cache_info
-    })
-
-# Clear cache endpoint
-@app.route('/clear-cache', methods=['POST'])
-def clear_cache():
-    """Clear all cache entries"""
-    with cache_lock:
-        data_cache.clear()
-    return jsonify({"status": "success", "message": "Cache cleared"})
-
-# Initialize background threads
-def start_background_threads():
-    # Start the background refresh worker
-    refresh_thread = threading.Thread(target=background_refresh_worker, daemon=True)
-    refresh_thread.start()
-    
-    # Preload common queries
-    preload_thread = threading.Thread(target=preload_common_queries, daemon=True)
-    preload_thread.start()
-    
-    return refresh_thread, preload_thread
-
-def shutdown_threads():
-    global running
-    running = False
-    logger.info("Shutting down background threads...")
-    executor.shutdown(wait=True)
-    logger.info("Thread pool shutdown complete")
+    return cached_jsonify(cache_key, query_fn)
 
 if __name__ == '__main__':
-    refresh_thread, preload_thread = start_background_threads()
-    
-    try:
-        app.run(debug=False, host='0.0.0.0', port=int(os.getenv("PORT", "5000")))
-    finally:
-        shutdown_threads()
+    app.run(debug=True)

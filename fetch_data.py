@@ -96,7 +96,7 @@ WITH uni AS (
           SELECT DISTINCT hcp_id, hcp_state, hcp_zip, hco_mdm, hco_state,
                           hco_postal_cd_prim, patient_id, hco_postal_cd_prim,
                           rend_hco_lat, rend_hco_long, hco_mdm_name,hco_grouping,rend_hco_territory,SPLIT_PART(mth,'_',1) AS year,hcp_segment
-          FROM zolg_master_v3
+        FROM zolg_master_v3 
           UNION ALL
           SELECT DISTINCT ref_npi AS hcp_id, ref_hcp_state AS hcp_state,
                           ref_hcp_zip AS hcp_zip, ref_hco_npi_mdm AS hco_mdm,

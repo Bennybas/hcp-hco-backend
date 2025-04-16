@@ -523,6 +523,5 @@ def fetch_referal_data():
         return df.to_dict(orient='records')
 
     return cached_jsonify(cache_key, query_fn)
-
 if __name__ == '__main__':
     app.run(debug=True)

@@ -10,7 +10,7 @@ import os
 load_dotenv()
 
 app = Flask(__name__)
-CORS(app)
+CORS(app, resources={r"/*": {"origins": "https://hcp-hco.onrender.com"}})
 swagger = Swagger(app)
 
 # In‑memory cache

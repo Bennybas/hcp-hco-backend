@@ -321,6 +321,7 @@ def fetch_hco_360():
         'hcp_name': request.args.get('hcp_name'),
         'ref_npi': request.args.get('ref_npi'),
         'hco_mdm': request.args.get('hco_mdm'),
+        'hco_mdm_name': request.args.get('hco_mdm_name'),
         'ref_hco_npi_mdm': request.args.get('ref_hco_npi_mdm'),
     }
     key_parts = [params[k] or 'none' for k in params]
@@ -343,7 +344,7 @@ def fetch_hco_360():
           ref_npi, ref_name, congress_contributions, publications, clinical_trials,
           hco_grouping, case when hco_mdm_tier='Tier 1' then 'HIGH'
           when hco_mdm_tier='Tier 2' then 'MEDIUM' when hco_mdm_tier='Tier 3' then 'LOW' when hco_mdm_tier='Tier 4' then 'V. LOW' else hco_mdm_tier end as hco_mdm_tier, account_setting_type, ref_hco_npi_mdm,QUARTER(DATE_PARSE(month, '%d-%m-%Y')) AS quarter,
-            SPLIT_PART(mth,'_',1) AS year,within_outside_hco_referral
+            SPLIT_PART(mth,'_',1) AS year,within_outside_hco_referral,ref_organization_mdm_name
         FROM "product_landing"."zolg_master_v2"
         WHERE 1=1
         """

@@ -11,9 +11,11 @@ load_dotenv()
 
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "https://hcp-hco.onrender.com"}})
+# CORS(app)
+
 swagger = Swagger(app)
 
-# In‑memory cache
+# In‑memory cache - only for specific endpoints
 data_cache = {}
 
 def get_athena_data(query):
@@ -30,15 +32,22 @@ def get_athena_data(query):
 def cached_jsonify(cache_key, query_fn):
     """
     Helper: check cache, optionally refresh, run query_fn() if needed, cache & return JSON.
+    Only caches for specific endpoints.
     """
-    refresh = request.args.get("refresh", "false").lower() == "true"
-    if cache_key in data_cache and not refresh:
-        return jsonify(data_cache[cache_key])
-
-    # run the provided query function
-    records = query_fn()
-    data_cache[cache_key] = records
-    return jsonify(records)
+    # Only cache for specified endpoints (those with cache keys starting with "fetch-data" or "fetch-map-data")
+    if cache_key.startswith("fetch-data") or cache_key.startswith("fetch-map-data"):
+        refresh = request.args.get("refresh", "false").lower() == "true"
+        if cache_key in data_cache and not refresh:
+            return jsonify(data_cache[cache_key])
+        
+        # run the provided query function
+        records = query_fn()
+        data_cache[cache_key] = records
+        return jsonify(records)
+    else:
+        # For all other endpoints, just run the query without caching
+        records = query_fn()
+        return jsonify(records)
 
 @app.route('/fetch-data', methods=['GET'])
 def fetch_data():
@@ -106,7 +115,7 @@ WITH uni AS (
                           ref_organization_mdm_name AS hco_mdm_name,hco_grouping,ref_hco_territory,SPLIT_PART(mth,'_',1) AS year,hcp_segment
           FROM zolg_master_v3
         )
-        SELECT * FROM uni
+        SELECT distinct * FROM uni
 
         """
         df = get_athena_data(q)
@@ -383,5 +392,19 @@ def fetch_referal_data():
 
     return cached_jsonify(cache_key, query_fn)
 
+
+@app.route('/fetch-zip', methods=['GET'])
+def fetch_zip():
+    cache_key = "fetch-zip-data"
+    def query_fn():
+        q = """
+        SELECT distinct territory_name, array_agg(distinct zip_code) as agg_zips FROM "product_landing"."zolg_territory" 
+group by territory_name
+        """
+        df = get_athena_data(q)
+        return df.to_dict(orient='records')
+
+    return cached_jsonify(cache_key, query_fn)
+    
 if __name__ == '__main__':
     app.run(debug=True)

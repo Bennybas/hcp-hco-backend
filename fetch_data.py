@@ -10,8 +10,8 @@ import os
 load_dotenv()
 
 app = Flask(__name__)
-CORS(app, resources={r"/*": {"origins": "https://hcp-hco.onrender.com"}})
-# CORS(app)
+# CORS(app, resources={r"/*": {"origins": "https://hcp-hco.onrender.com"}})
+CORS(app)
 
 swagger = Swagger(app)
 
